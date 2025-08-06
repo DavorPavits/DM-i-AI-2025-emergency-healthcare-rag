@@ -2,10 +2,70 @@ import json
 from typing import Tuple
 
 import helper
-import test as t
+from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.vector_stores.faiss import FaissVectorStore
+from llama_index.embeddings.langchain import LangchainEmbedding
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
+from llama_index.embeddings.langchain import LangchainEmbedding
+from llama_index.core import StorageContext, load_index_from_storage
+import os
+
+from sentence_transformers import SentenceTransformer, models
+word_embedding_model = models.Transformer("./bert-medical-llm")
+polling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
 
 json_dir = "./data/train/answers"
 txt_dir = "./data/train/statements"
+
+import faiss
+
+def build_index(documents, model_path="./my-sbert-medical"):
+    print(f"Loading custom model from {model_path}")
+
+    # Use HuggingFaceEmbeddings directly
+    langchain_embed_model = HuggingFaceEmbeddings(model_name=model_path)
+    embed_model = LangchainEmbedding(langchain_embed_model)
+
+    # Get embedding dimension from an actual embedding
+    dummy_vec = langchain_embed_model.embed_query("test")  # returns a list[float]
+    dim = len(dummy_vec)
+    
+    # Create FAISS index
+    faiss_index = faiss.IndexFlatL2(dim)
+
+    # Wrap with LlamaIndex FAISS vector store
+    vector_store = FaissVectorStore(faiss_index=faiss_index)
+
+    # Create storage context
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    # Build the index
+    index = VectorStoreIndex.from_documents(
+        documents,
+        embed_model=embed_model,
+        storage_context=storage_context,
+    )
+    
+    return index
+
+#Query Index and Return metadata
+def match_statement(index, query, top_k=1):
+    retriever = index.as_retriever(similarity_top_k = top_k)
+    nodes = retriever.retrieve(query)
+
+    results = []
+    for node in nodes:
+        metadata = node.metadata
+        results.append({
+            "matched_text": node.text,
+            "topic": metadata["topic"],
+            "is_true": metadata["is_true"],
+            "file_id": metadata["file_id"]
+        })
+
+    return results
+
 ### CALL YOUR CUSTOM MODEL VIA THIS FUNCTION ###
 def predict(statement: str) -> Tuple[int, int]:
     """
